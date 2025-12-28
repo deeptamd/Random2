@@ -144,7 +144,7 @@ class Boid {
     this.velocity = createVector(random(-1, 1), random(-1, 1));
     this.acceleration = createVector(0, 0);
 
-    this.r = 1; // 🔥 BIGGER SIZE (was 1.5)
+    this.r = 0.5; // 🔥 BIGGER SIZE (was 1.5)
 
     this.maxspeed = 3;
     this.maxforce = 0.3;
