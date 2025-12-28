@@ -8,28 +8,38 @@ let currentTemp = 273;
 let targetTemp = 273;
 let currentHumidity = 50;
 let targetHumidity = 50;
+
 let daylightValue = 0;
+let weatherCondition = "";
 
-let daylightSlider, humiditySlider, skyConditionSlider;
+let daylightSlider;
+let humiditySlider;
+let skyConditionSlider;
 
-const MAX_BOIDS = 900; // reduced for performance
-const NEIGHBOR_DIST = 60;
-const DESIRED_SEP = 40;
+let murmurationSound;
+let repelSound;
 
+let repelPoints = [];
+
+// ---------------- PRELOAD ----------------
+function preload() {
+  murmurationSound = loadSound("STARLINGS.mp3");
+  repelSound = loadSound("FLIGHT.mp3");
+}
+
+// ---------------- SETUP ----------------
 function setup() {
   createCanvas(1200, 600);
-  pixelDensity(1);
-
   loadWeatherData();
-  setInterval(loadWeatherData, 20000);
+  setInterval(loadWeatherData, 10000);
 
   flock = new Flock();
 
-  for (let i = 0; i < MAX_BOIDS; i++) {
+  for (let i = 0; i < 2000; i++) {
     flock.addBoid(
       new Boid(
-        width / 2 + random(-100, 100),
-        height / 2 + random(-100, 100)
+        width / 2 + random(-50, 50),
+        height / 2 + random(-50, 50)
       )
     );
   }
@@ -41,23 +51,50 @@ function setup() {
   daylightSlider.position(20, height + 20);
   humiditySlider.position(20, height + 60);
   skyConditionSlider.position(20, height + 100);
+
+  murmurationSound.loop();
 }
 
+// ---------------- DRAW ----------------
 function draw() {
   background(255);
 
   daylightValue = daylightSlider.value();
-  let skyVal = skyConditionSlider.value();
+  let skyConditionValue = skyConditionSlider.value();
   currentHumidity = humiditySlider.value();
 
   if (weatherData) {
-    currentTemp = lerp(currentTemp, targetTemp, 0.03);
-    currentHumidity = lerp(currentHumidity, targetHumidity, 0.03);
+    currentTemp = lerp(currentTemp, targetTemp, 0.05);
+    currentHumidity = lerp(currentHumidity, targetHumidity, 0.05);
+
+    for (let boid of flock.boids) {
+      boid.updateWeatherEffects(
+        currentTemp,
+        currentHumidity,
+        weatherCondition,
+        daylightValue,
+        skyConditionValue
+      );
+    }
   }
 
-  flock.run(currentTemp, currentHumidity, daylightValue, skyVal);
+  flock.run();
+  adjustBoidCount(daylightValue);
 }
 
+// ---------------- INTERACTION ----------------
+function mousePressed() {
+  if (mouseX > 0 && mouseX < width && mouseY > 0 && mouseY < height) {
+    repelPoints.push(createVector(mouseX, mouseY));
+    repelSound.play();
+  }
+}
+
+function mouseReleased() {
+  repelPoints = [];
+}
+
+// ---------------- WEATHER ----------------
 function loadWeatherData() {
   loadJSON(apiURL, processWeatherData);
 }
@@ -66,50 +103,60 @@ function processWeatherData(data) {
   weatherData = data;
   targetTemp = data.main.temp;
   targetHumidity = data.main.humidity;
+  weatherCondition = data.weather[0].description;
 }
 
-// =======================
-// FLOCK
-// =======================
+// ---------------- BOID COUNT ----------------
+function adjustBoidCount(daylightValue) {
+  let target = map(daylightValue, 0, 1, 500, 1700);
+  while (flock.boids.length > target) flock.boids.pop();
+  while (flock.boids.length < target) {
+    flock.addBoid(
+      new Boid(
+        width / 2 + random(-100, 100),
+        height / 2 + random(-100, 100)
+      )
+    );
+  }
+}
 
+// ================= FLOCK CLASS =================
 class Flock {
   constructor() {
     this.boids = [];
   }
 
+  run() {
+    for (let boid of this.boids) {
+      boid.run(this.boids);
+    }
+  }
+
   addBoid(b) {
     this.boids.push(b);
   }
-
-  run(temp, humidity, daylight, sky) {
-    for (let b of this.boids) {
-      b.applyEnvironment(temp, humidity, daylight, sky);
-      b.run(this.boids);
-    }
-  }
 }
 
-// =======================
-// BOID
-// =======================
-
+// ================= BOID CLASS =================
 class Boid {
   constructor(x, y) {
     this.position = createVector(x, y);
-    this.velocity = p5.Vector.random2D();
+    this.velocity = createVector(random(-1, 1), random(-1, 1));
     this.acceleration = createVector(0, 0);
 
-    this.maxSpeed = 3;
-    this.maxForce = 0.18;
+    this.r = 6; // 🔥 BIGGER SIZE (was 1.5)
 
-    // 🔥🔥 VERY CLEAR, BIG BOIDS 🔥🔥
-    this.size = 10; // ← MAIN SIZE CONTROL (try 8–14)
+    this.maxspeed = 3;
+    this.maxforce = 0.3;
+
+    this.separationFactor = 20;
+    this.cohesionFactor = 20;
   }
 
   run(boids) {
     this.flock(boids);
     this.update();
-    this.edges();
+    this.borders();
     this.render();
   }
 
@@ -117,16 +164,18 @@ class Boid {
     this.acceleration.add(f);
   }
 
-  applyEnvironment(temp, humidity, daylight, sky) {
-    this.maxSpeed = map(daylight, 0, 1, 2, 4);
-    if (sky < 0.4) this.maxSpeed += 0.8;
-    if (humidity > 70) this.maxSpeed -= 0.4;
+  updateWeatherEffects(temp, humidity, _, daylight, sky) {
+    this.cohesionFactor = map(temp, 270, 310, 1, 2);
+    this.separationFactor = map(humidity, 0, 100, 1, 3);
+
+    this.maxspeed = sky < 0.5 ? 6 : 3;
+    if (daylight < 0.2) this.maxspeed = 2;
   }
 
   flock(boids) {
-    let sep = this.separate(boids).mult(1.8);
-    let ali = this.align(boids).mult(1.0);
-    let coh = this.cohesion(boids).mult(1.0);
+    let sep = this.separate(boids).mult(this.separationFactor);
+    let ali = this.align(boids).mult(2);
+    let coh = this.cohesion(boids).mult(this.cohesionFactor);
 
     this.applyForce(sep);
     this.applyForce(ali);
@@ -135,36 +184,35 @@ class Boid {
 
   update() {
     this.velocity.add(this.acceleration);
-    this.velocity.limit(this.maxSpeed);
+    this.velocity.limit(this.maxspeed);
     this.position.add(this.velocity);
     this.acceleration.mult(0);
   }
 
   render() {
-    let theta = this.velocity.heading() + PI / 2;
+    let theta = this.velocity.heading() + radians(90);
 
-    fill(40);
-    stroke(40);
-    strokeWeight(0.5);
+    fill(50);
+    stroke(50);
+    strokeWeight(1);
 
     push();
     translate(this.position.x, this.position.y);
     rotate(theta);
-
     beginShape();
-    vertex(0, -this.size * 2.2);          // nose
-    vertex(-this.size * 1.2, this.size);  // left wing
-    vertex(this.size * 1.2, this.size);   // right wing
+    vertex(0, -this.r * 2.5);
+    vertex(-this.r * 1.4, this.r * 2);
+    vertex(this.r * 1.4, this.r * 2);
     endShape(CLOSE);
-
     pop();
   }
 
-  edges() {
-    if (this.position.x < -50) this.position.x = width + 50;
-    if (this.position.y < -50) this.position.y = height + 50;
-    if (this.position.x > width + 50) this.position.x = -50;
-    if (this.position.y > height + 50) this.position.y = -50;
+  borders() {
+    let m = 200;
+    if (this.position.x < m) this.applyForce(createVector(this.maxforce, 0));
+    if (this.position.x > width - m) this.applyForce(createVector(-this.maxforce, 0));
+    if (this.position.y < m) this.applyForce(createVector(0, this.maxforce));
+    if (this.position.y > height - m) this.applyForce(createVector(0, -this.maxforce));
   }
 
   separate(boids) {
@@ -173,7 +221,7 @@ class Boid {
 
     for (let other of boids) {
       let d = p5.Vector.dist(this.position, other.position);
-      if (d > 0 && d < DESIRED_SEP) {
+      if (d > 0 && d < 25) {
         let diff = p5.Vector.sub(this.position, other.position);
         diff.normalize().div(d);
         steer.add(diff);
@@ -183,9 +231,9 @@ class Boid {
 
     if (count > 0) steer.div(count);
     if (steer.mag() > 0) {
-      steer.setMag(this.maxSpeed);
+      steer.setMag(this.maxspeed);
       steer.sub(this.velocity);
-      steer.limit(this.maxForce);
+      steer.limit(this.maxforce);
     }
     return steer;
   }
@@ -196,7 +244,7 @@ class Boid {
 
     for (let other of boids) {
       let d = p5.Vector.dist(this.position, other.position);
-      if (d > 0 && d < NEIGHBOR_DIST) {
+      if (d > 0 && d < 40) {
         sum.add(other.velocity);
         count++;
       }
@@ -204,10 +252,8 @@ class Boid {
 
     if (count > 0) {
       sum.div(count);
-      sum.setMag(this.maxSpeed);
-      let steer = p5.Vector.sub(sum, this.velocity);
-      steer.limit(this.maxForce);
-      return steer;
+      sum.setMag(this.maxspeed);
+      return p5.Vector.sub(sum, this.velocity).limit(this.maxforce);
     }
     return createVector(0, 0);
   }
@@ -218,7 +264,7 @@ class Boid {
 
     for (let other of boids) {
       let d = p5.Vector.dist(this.position, other.position);
-      if (d > 0 && d < NEIGHBOR_DIST) {
+      if (d > 0 && d < 40) {
         sum.add(other.position);
         count++;
       }
@@ -227,10 +273,8 @@ class Boid {
     if (count > 0) {
       sum.div(count);
       let desired = p5.Vector.sub(sum, this.position);
-      desired.setMag(this.maxSpeed);
-      let steer = p5.Vector.sub(desired, this.velocity);
-      steer.limit(this.maxForce);
-      return steer;
+      desired.setMag(this.maxspeed);
+      return p5.Vector.sub(desired, this.velocity).limit(this.maxforce);
     }
     return createVector(0, 0);
   }
